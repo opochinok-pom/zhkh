@@ -61,17 +61,26 @@ function App() {
   const handleCellSave = useCallback(async (month, service, property, amount) => {
     setSaving(true);
     try {
-      const data = await upsertPayment(month, service, property, amount);
+      const saved = await upsertPayment(month, service, property, amount);
+      // Обновляем локальный стейт напрямую — не доверяем ответу Supabase upsert,
+      // который может вернуть пустой массив при обновлении существующей записи
+      const normalized = {
+        month,
+        service,
+        property,
+        amount: amount === '' || amount === null ? null : Number(amount),
+        ...(saved || {}),
+      };
       setPayments(prev => {
         const idx = prev.findIndex(
           p => p.month === month && p.service === service && p.property === property
         );
         if (idx >= 0) {
           const next = [...prev];
-          next[idx] = data;
+          next[idx] = normalized;
           return next;
         }
-        return [...prev, data];
+        return [...prev, normalized];
       });
       addToast(`Сохранено: ${property} / ${service}`, 'success');
     } catch (e) {

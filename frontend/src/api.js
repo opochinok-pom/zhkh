@@ -31,7 +31,8 @@ export async function upsertPayment(month, service, property, amount) {
     updated_at: new Date().toISOString()
   });
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
+  // on_conflict указывает PostgREST какие колонки использовать для ON CONFLICT DO UPDATE
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?on_conflict=month,service,property`, {
     method: 'POST',
     headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=representation' },
     body,

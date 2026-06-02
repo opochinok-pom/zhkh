@@ -96,7 +96,7 @@ function PayTable({ month, getValue, onSave }) {
             <td className="cell-service">{s}</td>
             {PROPERTIES.map(p => (
               <EditableCell
-                key={p}
+                key={`${month}-${p}`}
                 month={month}
                 service={s}
                 property={p}
