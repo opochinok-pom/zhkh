@@ -9,7 +9,7 @@ services:
     startCommand: npm start
     envVars:
       - key: SUPABASE_URL
-        value: https://pyabrzbliszumqfuibtl.supabase.co
+        value: https://pyabrzbllszumqfuibtl.supabase.co
       - key: SUPABASE_KEY
         sync: false   # set in Render dashboard
       - key: ANTHROPIC_API_KEY
