@@ -1,0 +1,33 @@
+# Render.com deployment config
+services:
+  # Backend API
+  - type: web
+    name: zhkh-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SUPABASE_URL
+        value: https://pyabrzbliszumqfuibtl.supabase.co
+      - key: SUPABASE_KEY
+        sync: false   # set in Render dashboard
+      - key: ANTHROPIC_API_KEY
+        sync: false   # set in Render dashboard
+      - key: PORT
+        value: "3001"
+
+  # Frontend (static site)
+  - type: web
+    name: zhkh-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: zhkh-backend
+          type: web
+          property: host
+          format: https://{value}
