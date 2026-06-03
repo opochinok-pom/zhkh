@@ -42,7 +42,8 @@ function App() {
       const data = await fetchPayments();
       setPayments(data);
     } catch (e) {
-      addToast('Ошибка загрузки данных: ' + e.message, 'error');
+      console.error('fetchPayments error:', e);
+      addToast('Ошибка загрузки: ' + (e.message || String(e)), 'error');
     } finally {
       setLoading(false);
     }
@@ -145,6 +146,7 @@ function App() {
       <div className="loader">
         <div className="spinner" />
         <span>Загрузка данных…</span>
+        <span style={{fontSize:'.7rem',opacity:.5,marginTop:8}}>Подключение к Supabase…</span>
       </div>
     </div>
   );
