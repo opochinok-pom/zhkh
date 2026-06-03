@@ -1,6 +1,4 @@
-// Vercel serverless function — проксирует запросы к Supabase
-// Браузер → vercel.app/api/payments → Supabase (VPN не блокирует)
-
+// Vercel serverless function (CommonJS) — проксирует к Supabase
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://pyabrzbllszumqfuibtl.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB5YWJyemJsbHN6dW1xZnVpYnRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMzk1MzgsImV4cCI6MjA5NTkxNTUzOH0.FHIi4V0x_K4dXx1OIeDH2MS09bSOI9E4FAPwfFEqc78';
 
@@ -10,7 +8,7 @@ const sbHeaders = {
   'Content-Type': 'application/json',
 };
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -18,7 +16,6 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      // order=id.desc — при дубликатах find() найдёт самую свежую запись первой
       const r = await fetch(`${SUPABASE_URL}/rest/v1/payments?select=*&order=id.desc`, { headers: sbHeaders });
       const data = await r.json();
       return res.status(r.status).json(data);
@@ -27,7 +24,6 @@ export default async function handler(req, res) {
     if (req.method === 'POST') {
       const { month, service, property, amount, oldAmount } = req.body;
 
-      // Upsert платежа
       const r = await fetch(
         `${SUPABASE_URL}/rest/v1/payments?on_conflict=month,service,property`,
         {
@@ -42,7 +38,6 @@ export default async function handler(req, res) {
       );
       const data = await r.json();
 
-      // История
       await fetch(`${SUPABASE_URL}/rest/v1/history`, {
         method: 'POST',
         headers: { ...sbHeaders, 'Prefer': 'return=minimal' },
@@ -61,4 +56,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
-}
+};
