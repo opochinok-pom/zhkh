@@ -62,7 +62,8 @@ function App() {
   const handleCellSave = useCallback(async (month, service, property, amount) => {
     setSaving(true);
     try {
-      const saved = await upsertPayment(month, service, property, amount);
+      const oldAmount = getValue(month, service, property);
+      const saved = await upsertPayment(month, service, property, amount, oldAmount);
       // Обновляем локальный стейт напрямую — не доверяем ответу Supabase upsert,
       // который может вернуть пустой массив при обновлении существующей записи
       const normalized = {
