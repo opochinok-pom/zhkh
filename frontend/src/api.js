@@ -27,7 +27,7 @@ export async function parseReceiptAI(file) {
   const form = new FormData();
   form.append('image', file);
   const res = await fetch('/api/ai/receipt', { method: 'POST', body: form });
-  if (!res.ok) throw new Error('AI недоступен. Добавьте ANTHROPIC_API_KEY в Vercel.');
+  if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
@@ -37,6 +37,6 @@ export async function parseCommandAI(text) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   });
-  if (!res.ok) throw new Error('AI недоступен. Добавьте ANTHROPIC_API_KEY в Vercel.');
+  if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
