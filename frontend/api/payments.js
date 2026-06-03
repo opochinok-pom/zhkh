@@ -18,7 +18,8 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/payments?select=*&order=month`, { headers: sbHeaders });
+      // order=id.desc — при дубликатах find() найдёт самую свежую запись первой
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/payments?select=*&order=id.desc`, { headers: sbHeaders });
       const data = await r.json();
       return res.status(r.status).json(data);
     }
