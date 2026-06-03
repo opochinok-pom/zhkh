@@ -16,9 +16,22 @@ module.exports = async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/payments?select=*&order=id.desc&limit=10000`, { headers: sbHeaders });
-      const data = await r.json();
-      return res.status(r.status).json(data);
+      // Supabase anon ключ ограничен 1000 строк — используем пагинацию
+      let all = [];
+      let offset = 0;
+      const pageSize = 1000;
+      while (true) {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/payments?select=*&order=id.desc&limit=${pageSize}&offset=${offset}`,
+          { headers: sbHeaders }
+        );
+        if (!r.ok) return res.status(r.status).json(await r.json());
+        const page = await r.json();
+        all = all.concat(page);
+        if (page.length < pageSize) break;
+        offset += pageSize;
+      }
+      return res.status(200).json(all);
     }
 
     if (req.method === 'POST') {
