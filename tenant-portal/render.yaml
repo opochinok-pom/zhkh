@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: tenant-portal-api
+    env: node
+    plan: free
+    rootDir: tenant-portal/backend
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_PHONE
+        sync: false
+      - key: SMSC_LOGIN
+        sync: false
+      - key: SMSC_PASSWORD
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
