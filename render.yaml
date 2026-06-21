@@ -31,3 +31,53 @@ services:
           type: web
           property: host
           format: https://{value}
+
+# ── Портал арендаторов ────────────────────────────────────────────────────────
+
+  # Backend API
+  - type: web
+    name: tenant-portal-api
+    runtime: node
+    rootDir: tenant-portal/backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SUPABASE_URL
+        sync: false   # задать в Render Dashboard
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_PHONE
+        sync: false   # ваш номер для SMS-уведомлений
+      - key: SMSC_LOGIN
+        sync: false   # логин SMSC.ru (необязательно)
+      - key: SMSC_PASSWORD
+        sync: false
+      - key: FRONTEND_URL
+        fromService:
+          name: tenant-portal-frontend
+          type: web
+          property: host
+          format: https://{value}
+      - key: PORT
+        value: "3002"
+
+  # Frontend (static site)
+  - type: web
+    name: tenant-portal-frontend
+    runtime: static
+    rootDir: tenant-portal/frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: tenant-portal-api
+          type: web
+          property: host
+          format: https://{value}

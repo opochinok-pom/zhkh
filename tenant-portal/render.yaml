@@ -1,14 +1,11 @@
 services:
   - type: web
     name: tenant-portal-api
-    env: node
-    plan: free
-    rootDir: tenant-portal/backend
+    runtime: node
+    rootDir: backend
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: npm start
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
@@ -22,4 +19,28 @@ services:
       - key: SMSC_PASSWORD
         sync: false
       - key: FRONTEND_URL
-        sync: false
+        fromService:
+          name: tenant-portal-frontend
+          type: web
+          property: host
+          format: https://{value}
+      - key: PORT
+        value: "10000"
+
+  - type: web
+    name: tenant-portal-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: tenant-portal-api
+          type: web
+          property: host
+          format: https://{value}
