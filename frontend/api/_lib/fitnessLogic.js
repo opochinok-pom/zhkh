@@ -1,6 +1,7 @@
 // Простые правила адаптации программы под факт тренировок и сон.
-// Используется Express-бэкендом (Render). Есть копия для Vercel serverless-
-// функций в frontend/api/_lib/fitnessLogic.js — правь оба файла синхронно.
+// Копия backend/fitnessLogic.js — используется Vercel serverless-функциями
+// (Vercel билдит только frontend/, поэтому require из backend/ недоступен).
+// Правь оба файла синхронно при изменении плана/порогов.
 
 const PULLUP_STAGES = [
   { name: 'Негативные подтягивания', exitReps: 5, description: 'Техника + тяга блока + негативы. Вес без изменений.' },
