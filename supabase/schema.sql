@@ -31,3 +31,69 @@ ALTER TABLE history ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all for anon" ON payments FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all for anon" ON history FOR ALL USING (true) WITH CHECK (true);
+
+-- ── Фитнес-план — Зал ───────────────────────────────────────────────────────
+
+-- Дневник тела: вес, сон, самочувствие, замеры
+CREATE TABLE IF NOT EXISTS fitness_body_logs (
+  id BIGSERIAL PRIMARY KEY,
+  log_date DATE NOT NULL UNIQUE,
+  weight_kg NUMERIC,
+  sleep_hours NUMERIC,
+  sleep_quality TEXT,
+  resting_hr NUMERIC,
+  spo2 NUMERIC,
+  vo2max NUMERIC,
+  chest_cm NUMERIC,
+  waist_cm NUMERIC,
+  hips_cm NUMERIC,
+  biceps_cm NUMERIC,
+  thigh_cm NUMERIC,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Журнал тренировок: факт выполнения по каждому упражнению
+CREATE TABLE IF NOT EXISTS fitness_workout_logs (
+  id BIGSERIAL PRIMARY KEY,
+  log_date DATE NOT NULL,
+  day_key TEXT NOT NULL,
+  exercise_id TEXT NOT NULL,
+  exercise_name TEXT,
+  sets_target INT,
+  reps_target TEXT,
+  sets_done INT,
+  reps_done TEXT,
+  weight_kg NUMERIC,
+  distance_km NUMERIC,
+  duration_min NUMERIC,
+  success BOOLEAN,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Текущее состояние программы по каждому упражнению (то, что подстраивается)
+CREATE TABLE IF NOT EXISTS fitness_exercise_state (
+  exercise_id TEXT PRIMARY KEY,
+  current_weight_kg NUMERIC,
+  current_reps_target TEXT,
+  current_sets_target INT,
+  stage_index INT DEFAULT 0,
+  consecutive_success INT DEFAULT 0,
+  consecutive_fail INT DEFAULT 0,
+  last_log_date DATE,
+  last_adjustment TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fitness_body_logs_date ON fitness_body_logs(log_date DESC);
+CREATE INDEX IF NOT EXISTS idx_fitness_workout_logs_date ON fitness_workout_logs(log_date DESC);
+CREATE INDEX IF NOT EXISTS idx_fitness_workout_logs_exercise ON fitness_workout_logs(exercise_id, log_date DESC);
+
+ALTER TABLE fitness_body_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fitness_workout_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fitness_exercise_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all for anon" ON fitness_body_logs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for anon" ON fitness_workout_logs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for anon" ON fitness_exercise_state FOR ALL USING (true) WITH CHECK (true);

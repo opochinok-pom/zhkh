@@ -5,6 +5,7 @@ const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const Anthropic = require('@anthropic-ai/sdk');
 const ws = require('ws');
+const { evaluateWorkoutLog, getSleepWarning } = require('./fitnessLogic');
 
 const app = express();
 app.use(cors());
@@ -169,6 +170,123 @@ app.post('/api/ai/command', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Фитнес: дневник тела (вес/сон/замеры) ────────────────────────────────────
+
+app.get('/api/fitness/body', async (req, res) => {
+  const limit = Number(req.query.limit) || 180;
+  const { data, error } = await supabase
+    .from('fitness_body_logs')
+    .select('*')
+    .order('log_date', { ascending: false })
+    .limit(limit);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.put('/api/fitness/body', async (req, res) => {
+  const { log_date, ...fields } = req.body;
+  if (!log_date) return res.status(400).json({ error: 'log_date обязателен' });
+
+  const { data, error } = await supabase
+    .from('fitness_body_logs')
+    .upsert({ log_date, ...fields }, { onConflict: 'log_date' })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// ── Фитнес: журнал тренировок + адаптация программы ─────────────────────────
+
+app.get('/api/fitness/workouts', async (req, res) => {
+  const { exerciseId, limit } = req.query;
+  let query = supabase.from('fitness_workout_logs').select('*').order('log_date', { ascending: false });
+  if (exerciseId) query = query.eq('exercise_id', exerciseId);
+  query = query.limit(Number(limit) || 100);
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/api/fitness/workouts', async (req, res) => {
+  const {
+    logDate, dayKey, exerciseId, exerciseName,
+    setsTarget, repsTarget, setsDone, repsDone,
+    weightKg, distanceKm, durationMin, durationSec, notes,
+  } = req.body;
+
+  if (!logDate || !exerciseId) {
+    return res.status(400).json({ error: 'logDate и exerciseId обязательны' });
+  }
+
+  const { data: prevState } = await supabase
+    .from('fitness_exercise_state')
+    .select('*')
+    .eq('exercise_id', exerciseId)
+    .maybeSingle();
+
+  const { stateUpdate, message } = evaluateWorkoutLog(
+    {
+      exerciseId, logDate, setsDone, setsTarget,
+      repsDone: Array.isArray(repsDone) ? repsDone.map(Number) : [],
+      weightKg, distanceKm, durationSec,
+    },
+    prevState
+  );
+
+  const { data: log, error: logError } = await supabase
+    .from('fitness_workout_logs')
+    .insert({
+      log_date: logDate,
+      day_key: dayKey || null,
+      exercise_id: exerciseId,
+      exercise_name: exerciseName || null,
+      sets_target: setsTarget ?? null,
+      reps_target: repsTarget ?? null,
+      sets_done: setsDone ?? null,
+      reps_done: Array.isArray(repsDone) ? repsDone.join(',') : (repsDone ?? null),
+      weight_kg: weightKg ?? null,
+      distance_km: distanceKm ?? null,
+      duration_min: durationMin ?? (durationSec ? durationSec / 60 : null),
+      notes: notes || null,
+    })
+    .select()
+    .single();
+
+  if (logError) return res.status(500).json({ error: logError.message });
+
+  const { data: state, error: stateError } = await supabase
+    .from('fitness_exercise_state')
+    .upsert(stateUpdate, { onConflict: 'exercise_id' })
+    .select()
+    .single();
+
+  if (stateError) return res.status(500).json({ error: stateError.message });
+
+  res.json({ log, state, message });
+});
+
+// ── Фитнес: текущее состояние программы (адаптивные targets) ────────────────
+
+app.get('/api/fitness/state', async (req, res) => {
+  const [{ data: states, error: statesError }, { data: bodyLogs, error: bodyError }] = await Promise.all([
+    supabase.from('fitness_exercise_state').select('*'),
+    supabase.from('fitness_body_logs').select('*').order('log_date', { ascending: false }).limit(1),
+  ]);
+
+  if (statesError) return res.status(500).json({ error: statesError.message });
+  if (bodyError) return res.status(500).json({ error: bodyError.message });
+
+  const latestBodyLog = bodyLogs?.[0] || null;
+  res.json({
+    states: states || [],
+    latestBodyLog,
+    sleepWarning: getSleepWarning(latestBodyLog),
+  });
 });
 
 // Раздаём собранный frontend (для production на Render)
