@@ -32,7 +32,7 @@ function ProgressionRail({ title, color, stages, stageIndex }) {
   );
 }
 
-function FitnessApp({ onNavigate }) {
+function FitnessApp() {
   const [activeDay, setActiveDay] = useState('mon');
   const [states, setStates] = useState({});
   const [latestBodyLog, setLatestBodyLog] = useState(null);
@@ -102,7 +102,6 @@ function FitnessApp({ onNavigate }) {
               {latestBodyLog?.weight_kg ?? '—'} кг · 184 см
             </div>
             <div className="f-hdr-actions">
-              <button className="f-link" onClick={() => onNavigate?.('zhkh')}>← ЖКХ</button>
               <button className="fbtn fbtn-outline" onClick={() => setShowBodyPanel(true)}>📋 Дневник тела</button>
             </div>
           </div>

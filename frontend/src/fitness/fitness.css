@@ -9,8 +9,6 @@
 .f-badge-gym { font-size:10px; font-weight:700; padding:3px 8px; border-radius:7px; color:#F59E0B; background:#F59E0B22; border:1px solid #F59E0B44; }
 .f-prf { font-size:12px; color:#94A3B8; margin-top:4px; }
 .f-hdr-actions { display:flex; gap:8px; align-items:center; margin-top:8px; justify-content:flex-end; }
-.f-link { font-size:11px; color:#64748B; text-decoration:none; border:1px solid #1E2330; border-radius:7px; padding:5px 9px; background:transparent; cursor:pointer; font-family:inherit; }
-.f-link:hover { color:#E2E8F0; }
 
 .f-stat-row { display:flex; gap:8px; margin-bottom:14px; }
 .f-stat { flex:1; background:#111520; border:1px solid; border-radius:10px; padding:8px 6px; text-align:center; }

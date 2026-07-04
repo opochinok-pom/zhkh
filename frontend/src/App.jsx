@@ -27,7 +27,7 @@ export const SERVICES = [
 const API = import.meta.env.VITE_API_URL || '';
 
 
-function App({ onNavigate }) {
+function App() {
   const [payments, setPayments]     = useState([]);   // [{id,month,service,property,amount}]
   const [loading, setLoading]       = useState(true);
   const [activeMonth, setActiveMonth] = useState('январь');
@@ -182,7 +182,6 @@ function App({ onNavigate }) {
 
         <div className="header-right">
           {saving && <span className="text-dim" style={{ fontSize: '.75rem' }}>⏳</span>}
-          <button className="btn btn-outline" title="Фитнес-план" onClick={() => onNavigate?.('fitness')}>🏋️ Фитнес</button>
           <button className="btn btn-outline btn-icon" title="История" onClick={() => setShowHistory(true)}>📋</button>
           <button className="btn btn-outline btn-icon" title="AI-квитанция" onClick={() => setShowAI(true)}>🤖</button>
           <button className="btn btn-gold btn-icon" title="Экспорт CSV" onClick={exportCSV}>⬇ CSV</button>
