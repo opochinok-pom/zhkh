@@ -30,7 +30,10 @@ export async function fetchHistory(limit = 20) {
 }
 
 export async function fetchHistoryItem(id) {
-  const res = await fetch(`/api/invest/history?id=${id}`);
+  // cache:'no-store' + метка времени в URL — защита от кэширования браузером и
+  // прозрачными прокси мобильных операторов, которые иначе могут годами отдавать
+  // один и тот же "pending" на идентичный URL, игнорируя Cache-Control.
+  const res = await fetch(`/api/invest/history?id=${id}&_t=${Date.now()}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
