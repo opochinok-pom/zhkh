@@ -32,13 +32,41 @@ async function callClaude({ model, system, messages, tools, max_tokens = 1024 })
   return { text, raw: data };
 }
 
+// Модель часто кладёт "настоящие" переводы строк внутрь строковых значений JSON
+// (вместо \n), из-за чего JSON.parse падает с "Bad control character". Эскейпим
+// управляющие символы, но только когда мы внутри строкового литерала.
+function escapeControlCharsInStrings(str) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const code = str.charCodeAt(i);
+    if (inString) {
+      if (escaped) { out += ch; escaped = false; continue; }
+      if (ch === '\\') { out += ch; escaped = true; continue; }
+      if (ch === '"') { inString = false; out += ch; continue; }
+      if (code === 10) { out += '\\n'; continue; }
+      if (code === 13) { out += '\\r'; continue; }
+      if (code === 9) { out += '\\t'; continue; }
+      if (code < 0x20) continue; // остальные управляющие символы просто выкидываем
+      out += ch;
+    } else {
+      if (ch === '"') { inString = true; }
+      out += ch;
+    }
+  }
+  return out;
+}
+
 // Достаёт JSON-объект из текста, даже если модель обернула его в markdown или добавила пояснения.
 function extractJSON(text) {
   const cleaned = text.replace(/```json?|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error('Не удалось найти JSON в ответе модели');
-  return JSON.parse(cleaned.slice(start, end + 1));
+  const jsonSlice = escapeControlCharsInStrings(cleaned.slice(start, end + 1));
+  return JSON.parse(jsonSlice);
 }
 
 module.exports = { callClaude, extractJSON };
