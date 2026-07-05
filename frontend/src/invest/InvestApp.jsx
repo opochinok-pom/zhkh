@@ -64,7 +64,8 @@ function InvestApp() {
     try {
       const data = await analyzePortfolio(shots.map(s => s.file), instructions);
       setResult(data);
-      addToast('Анализ портфеля готов', 'success');
+      if (data.save_error) addToast(data.save_error, 'error');
+      else addToast('Анализ портфеля готов', 'success');
     } catch (e) {
       addToast('Ошибка анализа: ' + e.message, 'error');
     } finally {

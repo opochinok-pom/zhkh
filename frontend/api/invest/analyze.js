@@ -120,6 +120,18 @@ module.exports = async function handler(req, res) {
       headers: { ...sbHeaders, 'Prefer': 'return=representation' },
       body: JSON.stringify(record),
     });
+
+    if (!saveRes.ok) {
+      // Отдаём готовый анализ пользователю даже если запись не сохранилась в историю
+      // (например, в БД ещё не применена свежая миграция) — работа Claude не теряется.
+      const errText = await saveRes.text();
+      console.error('Не удалось сохранить анализ в Supabase:', errText);
+      return res.status(200).json({
+        ...record, id: null, created_at: new Date().toISOString(),
+        save_error: 'Анализ не сохранён в историю (ошибка базы данных): ' + errText,
+      });
+    }
+
     const saved = await saveRes.json();
     const row = Array.isArray(saved) ? saved[0] : saved;
 
