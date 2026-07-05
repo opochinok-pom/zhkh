@@ -540,6 +540,19 @@ async function markInvestError(id, message) {
   await supabase.from('invest_analyses').update({ status: 'error', error_message: message }).eq('id', id);
 }
 
+// Если фоновая обработка была прервана (падение процесса, деплой и т.п.),
+// запись останется в 'pending' навечно, а клиент будет опрашивать её впустую.
+const STALE_PENDING_MS = 4 * 60 * 1000;
+
+async function markInvestStaleIfNeeded(row) {
+  if (row.status !== 'pending') return row;
+  if (Date.now() - new Date(row.created_at).getTime() < STALE_PENDING_MS) return row;
+
+  const errorMessage = 'Анализ прервался на сервере (превышено время выполнения). Попробуйте с меньшим числом скриншотов или повторите попытку.';
+  await supabase.from('invest_analyses').update({ status: 'error', error_message: errorMessage }).eq('id', row.id);
+  return { ...row, status: 'error', error_message: errorMessage };
+}
+
 app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res) => {
   const images = (req.files || []).filter(f => f.mimetype.startsWith('image/'));
   if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
@@ -559,13 +572,14 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
 });
 
 app.get('/api/invest/history', async (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
   const { id, limit } = req.query;
 
   if (id) {
     const { data, error } = await supabase.from('invest_analyses').select('*').eq('id', id).maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: 'Анализ не найден' });
-    return res.json(data);
+    return res.json(await markInvestStaleIfNeeded(data));
   }
 
   const { data, error } = await supabase
