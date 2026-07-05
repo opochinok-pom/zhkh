@@ -20,6 +20,15 @@ const supabase = createClient(
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// Достаёт JSON-объект из текста, даже если модель обернула его в markdown или добавила пояснения.
+function extractJson(text) {
+  const cleaned = String(text || '').replace(/```json?|```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error('Не удалось найти JSON в ответе модели');
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
 // ── Payments ──────────────────────────────────────────────────────────────────
 
 app.get('/api/payments', async (req, res) => {
@@ -287,6 +296,130 @@ app.get('/api/fitness/state', async (req, res) => {
     latestBodyLog,
     sleepWarning: getSleepWarning(latestBodyLog),
   });
+});
+
+// ── Инвестиции: анализ портфеля по скриншотам ────────────────────────────────
+
+const INVEST_SECTION_KEYS = [
+  'summary', 'composition', 'allocation', 'sector', 'geography',
+  'risk', 'diversification', 'performance', 'news_impact', 'recommendations',
+];
+
+const INVEST_SECTION_TITLES = {
+  summary: 'Сводка по портфелю',
+  composition: 'Состав активов',
+  allocation: 'Аллокация по классам активов',
+  sector: 'Отраслевая структура',
+  geography: 'Географическая структура',
+  risk: 'Риск и волатильность',
+  diversification: 'Диверсификация',
+  performance: 'Доходность и динамика',
+  news_impact: 'Влияние новостей на позиции',
+  recommendations: 'Рекомендации по ребалансировке',
+};
+
+app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res) => {
+  const images = (req.files || []).filter(f => f.mimetype.startsWith('image/'));
+  if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+
+  try {
+    const extraction = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 2048,
+      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные.
+Ответь ТОЛЬКО валидным JSON без markdown в формате:
+{"broker":"название брокера/платформы или null","currency":"валюта портфеля (RUB/USD/EUR/...) или null","total_value":число или null,"positions":[{"ticker":"...","name":"...","quantity":число или null,"avg_price":число или null,"current_price":число или null,"value":число или null,"weight_pct":число или null,"asset_class":"акции|облигации|фонды|денежные средства|крипто|прочее","sector":"... или null","country":"... или null"}]}
+Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS).`,
+      messages: [{
+        role: 'user',
+        content: [
+          ...images.map(f => ({ type: 'image', source: { type: 'base64', media_type: f.mimetype, data: f.buffer.toString('base64') } })),
+          { type: 'text', text: 'Распознай портфель на этих скриншотах и верни JSON.' },
+        ],
+      }],
+    });
+
+    const extractionText = extraction.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const portfolio = extractJson(extractionText);
+
+    const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
+Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (3-6 предложений или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
+Ответь ТОЛЬКО валидным JSON без markdown в формате:
+{"sections":{${INVEST_SECTION_KEYS.map(k => `"${k}":{"title":"${INVEST_SECTION_TITLES[k]}","text":"..."}`).join(',')}},"news":[{"ticker":"...","title":"...","url":"...","date":"...","sentiment":"positive|negative|neutral","summary":"..."}]}`;
+
+    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам.`;
+
+    let analysisText;
+    try {
+      const withSearch = await anthropic.messages.create({
+        model: 'claude-sonnet-5',
+        max_tokens: 4096,
+        system: analysisSystem,
+        messages: [{ role: 'user', content: analysisUser }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+      }, { headers: { 'anthropic-beta': 'web-search-2025-03-05' } });
+      analysisText = withSearch.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    } catch (e) {
+      // Веб-поиск может быть недоступен для аккаунта — считаем анализ без свежих новостей
+      const withoutSearch = await anthropic.messages.create({
+        model: 'claude-sonnet-5',
+        max_tokens: 4096,
+        system: analysisSystem + '\nЕсли веб-поиск недоступен, честно укажи это в разделе "news_impact" и оставь news пустым массивом.',
+        messages: [{ role: 'user', content: analysisUser }],
+      });
+      analysisText = withoutSearch.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    }
+
+    const analysis = extractJson(analysisText);
+    const sections = analysis.sections || {};
+    INVEST_SECTION_KEYS.forEach(k => {
+      if (!sections[k]) sections[k] = { title: INVEST_SECTION_TITLES[k], text: 'Нет данных.' };
+    });
+    const news = Array.isArray(analysis.news) ? analysis.news : [];
+
+    const record = {
+      broker: portfolio.broker || null,
+      currency: portfolio.currency || null,
+      total_value: portfolio.total_value ?? null,
+      screenshot_count: images.length,
+      positions: portfolio.positions || [],
+      sections,
+      news,
+    };
+
+    const { data: saved, error } = await supabase.from('invest_analyses').insert(record).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(saved);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/invest/history', async (req, res) => {
+  const { id, limit } = req.query;
+
+  if (id) {
+    const { data, error } = await supabase.from('invest_analyses').select('*').eq('id', id).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Анализ не найден' });
+    return res.json(data);
+  }
+
+  const { data, error } = await supabase
+    .from('invest_analyses')
+    .select('id,created_at,broker,currency,total_value,screenshot_count')
+    .order('created_at', { ascending: false })
+    .limit(Number(limit) || 20);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/api/invest/history', async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).json({ error: 'id обязателен' });
+  const { error } = await supabase.from('invest_analyses').delete().eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
 });
 
 // Раздаём собранный frontend (для production на Render)
