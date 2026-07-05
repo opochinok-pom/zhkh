@@ -8,6 +8,25 @@ const sbHeaders = {
   'Content-Type': 'application/json',
 };
 
+// Если фоновая функция анализа была убита платформой по лимиту времени
+// выполнения, запись останется в 'pending' навечно, а клиент будет опрашивать
+// её впустую. Считаем анализ провалившимся, если он висит в pending дольше
+// разумного времени, — и помечаем это в БД, чтобы не пересчитывать при каждом опросе.
+const STALE_PENDING_MS = 4 * 60 * 1000;
+
+async function markStaleIfNeeded(row) {
+  if (row.status !== 'pending') return row;
+  if (Date.now() - new Date(row.created_at).getTime() < STALE_PENDING_MS) return row;
+
+  const errorMessage = 'Анализ прервался на сервере (превышено время выполнения). Попробуйте с меньшим числом скриншотов или повторите попытку.';
+  await fetch(`${SUPABASE_URL}/rest/v1/invest_analyses?id=eq.${row.id}`, {
+    method: 'PATCH',
+    headers: sbHeaders,
+    body: JSON.stringify({ status: 'error', error_message: errorMessage }),
+  });
+  return { ...row, status: 'error', error_message: errorMessage };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, DELETE, OPTIONS');
@@ -30,7 +49,7 @@ module.exports = async function handler(req, res) {
         const data = await r.json();
         const row = Array.isArray(data) ? data[0] : data;
         if (!row) return res.status(404).json({ error: 'Анализ не найден' });
-        return res.status(200).json(row);
+        return res.status(200).json(await markStaleIfNeeded(row));
       }
 
       const lim = Number(limit) || 20;

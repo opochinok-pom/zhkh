@@ -3,6 +3,6 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "functions": {
-    "api/invest/analyze.js": { "maxDuration": 90 }
+    "api/invest/analyze.js": { "maxDuration": 300 }
   }
 }
