@@ -20,13 +20,40 @@ const supabase = createClient(
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// Модель часто кладёт "настоящие" переводы строк внутрь строковых значений JSON
+// (вместо \n), из-за чего JSON.parse падает с "Bad control character". Эскейпим
+// управляющие символы, но только когда мы внутри строкового литерала.
+function escapeControlCharsInStrings(str) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const code = str.charCodeAt(i);
+    if (inString) {
+      if (escaped) { out += ch; escaped = false; continue; }
+      if (ch === '\\') { out += ch; escaped = true; continue; }
+      if (ch === '"') { inString = false; out += ch; continue; }
+      if (code === 10) { out += '\\n'; continue; }
+      if (code === 13) { out += '\\r'; continue; }
+      if (code === 9) { out += '\\t'; continue; }
+      if (code < 0x20) continue; // остальные управляющие символы просто выкидываем
+      out += ch;
+    } else {
+      if (ch === '"') { inString = true; }
+      out += ch;
+    }
+  }
+  return out;
+}
+
 // Достаёт JSON-объект из текста, даже если модель обернула его в markdown или добавила пояснения.
 function extractJson(text) {
   const cleaned = String(text || '').replace(/```json?|```/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error('Не удалось найти JSON в ответе модели');
-  return JSON.parse(cleaned.slice(start, end + 1));
+  return JSON.parse(escapeControlCharsInStrings(cleaned.slice(start, end + 1)));
 }
 
 // ── Payments ──────────────────────────────────────────────────────────────────
@@ -318,6 +345,85 @@ const INVEST_SECTION_TITLES = {
   recommendations: 'Рекомендации по ребалансировке',
 };
 
+const nullableString = { type: ['string', 'null'] };
+const nullableNumber = { type: ['number', 'null'] };
+
+// tool-use: аргументы вызова валидируются Anthropic API по input_schema, поэтому
+// в отличие от свободного текста они не могут стать невалидным JSON (неэскейпленные
+// кавычки/переводы строк, обрыв на лимите токенов и т.п.).
+const PORTFOLIO_TOOL = {
+  name: 'extract_portfolio',
+  description: 'Сохранить распознанные со скриншотов позиции инвестиционного портфеля.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      broker: nullableString,
+      currency: nullableString,
+      total_value: nullableNumber,
+      positions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            ticker: nullableString,
+            name: nullableString,
+            quantity: nullableNumber,
+            avg_price: nullableNumber,
+            current_price: nullableNumber,
+            value: nullableNumber,
+            weight_pct: nullableNumber,
+            asset_class: nullableString,
+            sector: nullableString,
+            country: nullableString,
+          },
+        },
+      },
+    },
+    required: ['positions'],
+  },
+};
+
+const INVEST_SECTION_SCHEMA = {
+  type: 'object',
+  properties: { title: { type: 'string' }, text: { type: 'string' } },
+  required: ['title', 'text'],
+};
+
+const ANALYSIS_TOOL = {
+  name: 'submit_analysis',
+  description: 'Отправить итоговый анализ портфеля из 10 разделов и список учтённых новостей. Вызывается один раз, после того как весь необходимый веб-поиск завершён.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      sections: {
+        type: 'object',
+        properties: INVEST_SECTION_KEYS.reduce((acc, k) => ({ ...acc, [k]: INVEST_SECTION_SCHEMA }), {}),
+        required: INVEST_SECTION_KEYS,
+      },
+      news: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            ticker: nullableString,
+            title: { type: 'string' },
+            url: nullableString,
+            date: nullableString,
+            sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+            summary: nullableString,
+          },
+          required: ['title'],
+        },
+      },
+    },
+    required: ['sections', 'news'],
+  },
+};
+
+function findToolUse(content, name) {
+  return (content || []).find(b => b.type === 'tool_use' && b.name === name)?.input || null;
+}
+
 app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res) => {
   const images = (req.files || []).filter(f => f.mimetype.startsWith('image/'));
   if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
@@ -325,52 +431,61 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
   try {
     const extraction = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
-      max_tokens: 2048,
-      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные.
-Ответь ТОЛЬКО валидным JSON без markdown в формате:
-{"broker":"название брокера/платформы или null","currency":"валюта портфеля (RUB/USD/EUR/...) или null","total_value":число или null,"positions":[{"ticker":"...","name":"...","quantity":число или null,"avg_price":число или null,"current_price":число или null,"value":число или null,"weight_pct":число или null,"asset_class":"акции|облигации|фонды|денежные средства|крипто|прочее","sector":"... или null","country":"... или null"}]}
-Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS).`,
+      max_tokens: 4096,
+      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные. Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS). Обязательно вызови extract_portfolio с результатом.`,
       messages: [{
         role: 'user',
         content: [
           ...images.map(f => ({ type: 'image', source: { type: 'base64', media_type: f.mimetype, data: f.buffer.toString('base64') } })),
-          { type: 'text', text: 'Распознай портфель на этих скриншотах и верни JSON.' },
+          { type: 'text', text: 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.' },
         ],
       }],
+      tools: [PORTFOLIO_TOOL],
+      tool_choice: { type: 'tool', name: 'extract_portfolio' },
     });
 
-    const extractionText = extraction.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-    const portfolio = extractJson(extractionText);
+    const portfolio = findToolUse(extraction.content, 'extract_portfolio');
+    if (!portfolio) return res.status(502).json({ error: 'Claude не распознал портфель' });
 
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
-Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (3-6 предложений или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
-Ответь ТОЛЬКО валидным JSON без markdown в формате:
-{"sections":{${INVEST_SECTION_KEYS.map(k => `"${k}":{"title":"${INVEST_SECTION_TITLES[k]}","text":"..."}`).join(',')}},"news":[{"ticker":"...","title":"...","url":"...","date":"...","sentiment":"positive|negative|neutral","summary":"..."}]}`;
+Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
+Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом.`;
 
-    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам.`;
+    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
 
-    let analysisText;
+    let analysis = null;
     try {
       const withSearch = await anthropic.messages.create({
         model: 'claude-sonnet-5',
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: analysisSystem,
         messages: [{ role: 'user', content: analysisUser }],
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }, ANALYSIS_TOOL],
       }, { headers: { 'anthropic-beta': 'web-search-2025-03-05' } });
-      analysisText = withSearch.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      analysis = findToolUse(withSearch.content, 'submit_analysis');
+      if (!analysis) {
+        const text = withSearch.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+        if (text) analysis = extractJson(text);
+      }
     } catch (e) {
-      // Веб-поиск может быть недоступен для аккаунта — считаем анализ без свежих новостей
-      const withoutSearch = await anthropic.messages.create({
-        model: 'claude-sonnet-5',
-        max_tokens: 4096,
-        system: analysisSystem + '\nЕсли веб-поиск недоступен, честно укажи это в разделе "news_impact" и оставь news пустым массивом.',
-        messages: [{ role: 'user', content: analysisUser }],
-      });
-      analysisText = withoutSearch.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      analysis = null;
     }
 
-    const analysis = extractJson(analysisText);
+    if (!analysis) {
+      // Веб-поиск может быть недоступен для аккаунта, либо модель не вызвала tool —
+      // повторяем запрос без поиска, но с жёстко зафиксированным tool_choice.
+      const withoutSearch = await anthropic.messages.create({
+        model: 'claude-sonnet-5',
+        max_tokens: 8192,
+        system: analysisSystem + '\nЕсли у тебя нет доступа к свежим новостям, честно укажи это в разделе "news_impact" и оставь news пустым массивом.',
+        messages: [{ role: 'user', content: analysisUser }],
+        tools: [ANALYSIS_TOOL],
+        tool_choice: { type: 'tool', name: 'submit_analysis' },
+      });
+      analysis = findToolUse(withoutSearch.content, 'submit_analysis');
+      if (!analysis) return res.status(502).json({ error: 'Claude не смог сформировать анализ' });
+    }
+
     const sections = analysis.sections || {};
     INVEST_SECTION_KEYS.forEach(k => {
       if (!sections[k]) sections[k] = { title: INVEST_SECTION_TITLES[k], text: 'Нет данных.' };
