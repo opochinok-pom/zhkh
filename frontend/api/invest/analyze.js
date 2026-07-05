@@ -22,11 +22,26 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
+  let images, fields;
   try {
     const buf = await readBody(req);
-    const { files, fields } = parseMultipart(buf, req.headers['content-type']);
-    const images = files.filter(f => f.mediaType.startsWith('image/'));
-    if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+    const parsed = parseMultipart(buf, req.headers['content-type']);
+    fields = parsed.fields;
+    images = parsed.files.filter(f => f.mediaType.startsWith('image/'));
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+
+  // Анализ занимает десятки секунд (распознавание + веб-поиск). На мобильных
+  // сетях/прокси соединение без единого байта данных долго может обрываться
+  // ("Load failed" в Safari) — поэтому шлём периодический heartbeat, держащий
+  // HTTP-соединение живым, пока идёт обработка.
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  const heartbeat = setInterval(() => { try { res.write(' '); } catch (e) { /* соединение уже закрыто */ } }, 15000);
+  const finish = (payload) => { clearInterval(heartbeat); res.end(JSON.stringify(payload)); };
+
+  try {
     const instructions = (fields.instructions || '').trim() || null;
 
     // ── 1. Распознаём позиции портфеля со всех скриншотов ──────────────────
@@ -52,7 +67,7 @@ module.exports = async function handler(req, res) {
     });
 
     const portfolio = findToolUse(extraction.toolUses, 'extract_portfolio');
-    if (!portfolio) return res.status(502).json({ error: 'Claude не распознал портфель' });
+    if (!portfolio) return finish({ error: 'Claude не распознал портфель' });
 
     // ── 2. Ищем новости и строим полный анализ по 10 разделам ──────────────
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
@@ -68,7 +83,7 @@ module.exports = async function handler(req, res) {
         max_tokens: 8192,
         system: analysisSystem,
         messages: [{ role: 'user', content: analysisUser }],
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }, ANALYSIS_TOOL],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }, ANALYSIS_TOOL],
       });
       analysis = findToolUse(withSearch.toolUses, 'submit_analysis');
       if (!analysis && withSearch.text) analysis = extractJSON(withSearch.text);
@@ -88,7 +103,7 @@ module.exports = async function handler(req, res) {
         tool_choice: { type: 'tool', name: 'submit_analysis' },
       });
       analysis = findToolUse(withoutSearch.toolUses, 'submit_analysis');
-      if (!analysis) return res.status(502).json({ error: 'Claude не смог сформировать анализ' });
+      if (!analysis) return finish({ error: 'Claude не смог сформировать анализ' });
     }
 
     // Даже при tool-use модель иногда кладёт sections/news как строку с сырым JSON
@@ -126,7 +141,7 @@ module.exports = async function handler(req, res) {
       // (например, в БД ещё не применена свежая миграция) — работа Claude не теряется.
       const errText = await saveRes.text();
       console.error('Не удалось сохранить анализ в Supabase:', errText);
-      return res.status(200).json({
+      return finish({
         ...record, id: null, created_at: new Date().toISOString(),
         save_error: 'Анализ не сохранён в историю (ошибка базы данных): ' + errText,
       });
@@ -135,8 +150,8 @@ module.exports = async function handler(req, res) {
     const saved = await saveRes.json();
     const row = Array.isArray(saved) ? saved[0] : saved;
 
-    return res.status(200).json(row || { ...record, id: null, created_at: new Date().toISOString() });
+    return finish(row || { ...record, id: null, created_at: new Date().toISOString() });
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    return finish({ error: e.message });
   }
 };

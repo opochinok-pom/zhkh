@@ -3,8 +3,13 @@ export async function analyzePortfolio(files, instructions) {
   files.forEach(f => form.append('screenshots', f, f.name));
   if (instructions && instructions.trim()) form.append('instructions', instructions.trim());
   const res = await fetch('/api/invest/analyze', { method: 'POST', body: form });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const text = await res.text();
+  // Пока идёт анализ, сервер шлёт heartbeat-пробелы, чтобы соединение не обрывалось
+  // на мобильных сетях/прокси — JSON.parse спокойно пропускает такие пробелы.
+  let data;
+  try { data = JSON.parse(text); } catch (e) { throw new Error(text || 'Пустой ответ сервера'); }
+  if (!res.ok || data.error) throw new Error(data.error || text);
+  return data;
 }
 
 export async function fetchHistory(limit = 20) {
