@@ -1,6 +1,7 @@
-export async function analyzePortfolio(files) {
+export async function analyzePortfolio(files, instructions) {
   const form = new FormData();
   files.forEach(f => form.append('screenshots', f, f.name));
+  if (instructions && instructions.trim()) form.append('instructions', instructions.trim());
   const res = await fetch('/api/invest/analyze', { method: 'POST', body: form });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

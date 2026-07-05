@@ -16,6 +16,7 @@ const STAGES = [
 
 function InvestApp() {
   const [shots, setShots] = useState([]); // [{id, file, preview}]
+  const [instructions, setInstructions] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const [stage, setStage] = useState(0);
   const [result, setResult] = useState(null);
@@ -61,7 +62,7 @@ function InvestApp() {
     }, 4000);
 
     try {
-      const data = await analyzePortfolio(shots.map(s => s.file));
+      const data = await analyzePortfolio(shots.map(s => s.file), instructions);
       setResult(data);
       addToast('Анализ портфеля готов', 'success');
     } catch (e) {
@@ -118,6 +119,17 @@ function InvestApp() {
           <div className="i-card-head"><span className="i-card-title">📎 Скриншоты портфеля</span></div>
           <UploadZone shots={shots} onAdd={handleAdd} onRemove={handleRemove} disabled={analyzing} />
 
+          <label className="i-instructions-label" htmlFor="i-instructions">Поручение для анализа (необязательно)</label>
+          <textarea
+            id="i-instructions"
+            className="i-instructions-input"
+            value={instructions}
+            onChange={e => setInstructions(e.target.value)}
+            disabled={analyzing}
+            placeholder="Например: брокер — Сбер, не учитывай облигации, планирую докупить акции IT-сектора…"
+            rows={2}
+          />
+
           <button
             className="i-btn i-btn-primary i-analyze-btn"
             onClick={handleAnalyze}
@@ -133,6 +145,12 @@ function InvestApp() {
 
         {result && (
           <>
+            {result.instructions && (
+              <div className="i-card i-instructions-note">
+                <span className="i-card-title">📝 Поручение к этому анализу</span>
+                <p>{result.instructions}</p>
+              </div>
+            )}
             <PositionsTable portfolio={result} />
             <SectionsGrid sections={result.sections} />
             <NewsList news={result.news} />
