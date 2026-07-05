@@ -3,7 +3,7 @@
 // Итоговый JSON приходит через tool-use (аргументы валидируются Anthropic API
 // по input_schema), а не парсится из свободного текста — так надёжнее.
 const { readBody, parseMultipart } = require('../_lib/multipart');
-const { callClaude, extractJSON, findToolUse } = require('../_lib/claude');
+const { callClaude, extractJSON, findToolUse, coerceJSON } = require('../_lib/claude');
 const { SECTION_KEYS, SECTION_TITLES, PORTFOLIO_TOOL, ANALYSIS_TOOL } = require('../_lib/investSchemas');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://pyabrzbllszumqfuibtl.supabase.co';
@@ -53,7 +53,7 @@ module.exports = async function handler(req, res) {
     // ── 2. Ищем новости и строим полный анализ по 10 разделам ──────────────
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
 Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
-Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом.`;
+Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом. Поле sections — это настоящий вложенный JSON-объект с 10 ключами (каждый — объект {title, text}), а не строка с текстом JSON внутри.`;
 
     const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
 
@@ -87,12 +87,17 @@ module.exports = async function handler(req, res) {
       if (!analysis) return res.status(502).json({ error: 'Claude не смог сформировать анализ' });
     }
 
-    const sections = analysis.sections || {};
+    // Даже при tool-use модель иногда кладёт sections/news как строку с сырым JSON
+    // вместо настоящей структуры — пытаемся распарсить перед проверками ниже.
+    const coercedSections = coerceJSON(analysis.sections);
+    const sections = (coercedSections && typeof coercedSections === 'object' && !Array.isArray(coercedSections))
+      ? coercedSections : {};
     // Гарантируем присутствие всех 10 разделов даже если модель что-то упустила
     SECTION_KEYS.forEach(k => {
       if (!sections[k]) sections[k] = { title: SECTION_TITLES[k], text: 'Нет данных.' };
     });
-    const news = Array.isArray(analysis.news) ? analysis.news : [];
+    const coercedNews = coerceJSON(analysis.news);
+    const news = Array.isArray(coercedNews) ? coercedNews : [];
 
     // ── 3. Сохраняем результат ──────────────────────────────────────────────
     const record = {

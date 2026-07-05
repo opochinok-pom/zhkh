@@ -47,13 +47,33 @@ function escapeControlCharsInStrings(str) {
   return out;
 }
 
-// Достаёт JSON-объект из текста, даже если модель обернула его в markdown или добавила пояснения.
-function extractJson(text) {
+// Достаёт JSON (объект или массив) из текста, даже если модель обернула его в
+// markdown или добавила пояснения.
+function parseJsonFragment(text) {
   const cleaned = String(text || '').replace(/```json?|```/g, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('Не удалось найти JSON в ответе модели');
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let start, endChar;
+  if (firstBrace === -1 && firstBracket === -1) throw new Error('Не удалось найти JSON в ответе модели');
+  if (firstBracket === -1 || (firstBrace !== -1 && firstBrace < firstBracket)) {
+    start = firstBrace; endChar = '}';
+  } else {
+    start = firstBracket; endChar = ']';
+  }
+  const end = cleaned.lastIndexOf(endChar);
+  if (end === -1) throw new Error('Не удалось найти конец JSON в ответе модели');
   return JSON.parse(escapeControlCharsInStrings(cleaned.slice(start, end + 1)));
+}
+
+function extractJson(text) {
+  return parseJsonFragment(text);
+}
+
+// Даже при tool-use модель иногда кладёт вложенный объект/массив как
+// сериализованную строку вместо настоящей структуры (нарушая input_schema).
+function coerceJson(value) {
+  if (typeof value !== 'string') return value;
+  try { return parseJsonFragment(value); } catch (e) { return value; }
 }
 
 // ── Payments ──────────────────────────────────────────────────────────────────
@@ -449,7 +469,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
 
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
 Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
-Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом.`;
+Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом. Поле sections — это настоящий вложенный JSON-объект с 10 ключами (каждый — объект {title, text}), а не строка с текстом JSON внутри.`;
 
     const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
 
@@ -486,11 +506,14 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
       if (!analysis) return res.status(502).json({ error: 'Claude не смог сформировать анализ' });
     }
 
-    const sections = analysis.sections || {};
+    const coercedSections = coerceJson(analysis.sections);
+    const sections = (coercedSections && typeof coercedSections === 'object' && !Array.isArray(coercedSections))
+      ? coercedSections : {};
     INVEST_SECTION_KEYS.forEach(k => {
       if (!sections[k]) sections[k] = { title: INVEST_SECTION_TITLES[k], text: 'Нет данных.' };
     });
-    const news = Array.isArray(analysis.news) ? analysis.news : [];
+    const coercedNews = coerceJson(analysis.news);
+    const news = Array.isArray(coercedNews) ? coercedNews : [];
 
     const record = {
       broker: portfolio.broker || null,

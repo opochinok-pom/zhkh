@@ -72,14 +72,34 @@ function escapeControlCharsInStrings(str) {
   return out;
 }
 
-// Достаёт JSON-объект из текста, даже если модель обернула его в markdown или добавила пояснения.
-function extractJSON(text) {
-  const cleaned = text.replace(/```json?|```/g, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('Не удалось найти JSON в ответе модели');
-  const jsonSlice = escapeControlCharsInStrings(cleaned.slice(start, end + 1));
-  return JSON.parse(jsonSlice);
+// Достаёт JSON (объект или массив) из текста, даже если модель обернула его в
+// markdown или добавила пояснения.
+function parseJSONFragment(text) {
+  const cleaned = String(text).replace(/```json?|```/g, '').trim();
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let start, endChar;
+  if (firstBrace === -1 && firstBracket === -1) throw new Error('Не удалось найти JSON в ответе модели');
+  if (firstBracket === -1 || (firstBrace !== -1 && firstBrace < firstBracket)) {
+    start = firstBrace; endChar = '}';
+  } else {
+    start = firstBracket; endChar = ']';
+  }
+  const end = cleaned.lastIndexOf(endChar);
+  if (end === -1) throw new Error('Не удалось найти конец JSON в ответе модели');
+  return JSON.parse(escapeControlCharsInStrings(cleaned.slice(start, end + 1)));
 }
 
-module.exports = { callClaude, extractJSON, findToolUse };
+function extractJSON(text) {
+  return parseJSONFragment(text);
+}
+
+// Даже при tool-use модель иногда кладёт вложенный объект/массив как
+// сериализованную строку вместо настоящей структуры (нарушая input_schema).
+// Если значение уже не строка — возвращаем как есть, иначе пытаемся распарсить.
+function coerceJSON(value) {
+  if (typeof value !== 'string') return value;
+  try { return parseJSONFragment(value); } catch (e) { return value; }
+}
+
+module.exports = { callClaude, extractJSON, findToolUse, coerceJSON };
