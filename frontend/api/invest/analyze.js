@@ -24,15 +24,19 @@ module.exports = async function handler(req, res) {
 
   try {
     const buf = await readBody(req);
-    const { files } = parseMultipart(buf, req.headers['content-type']);
+    const { files, fields } = parseMultipart(buf, req.headers['content-type']);
     const images = files.filter(f => f.mediaType.startsWith('image/'));
     if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+    const instructions = (fields.instructions || '').trim() || null;
 
     // ── 1. Распознаём позиции портфеля со всех скриншотов ──────────────────
+    const extractionUserText = 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.'
+      + (instructions ? `\n\nДополнительное поручение от пользователя (используй как контекст, например уточнение брокера): ${instructions}` : '');
+
     const extraction = await callClaude({
       model: 'claude-haiku-4-5',
       max_tokens: 4096,
-      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные. Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS). Обязательно вызови extract_portfolio с результатом.`,
+      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные. Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS). Если пользователь в поручении явно указал брокера или другие детали портфеля — используй их. Обязательно вызови extract_portfolio с результатом.`,
       messages: [{
         role: 'user',
         content: [
@@ -40,7 +44,7 @@ module.exports = async function handler(req, res) {
             type: 'image',
             source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
           })),
-          { type: 'text', text: 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.' },
+          { type: 'text', text: extractionUserText },
         ],
       }],
       tools: [PORTFOLIO_TOOL],
@@ -55,7 +59,7 @@ module.exports = async function handler(req, res) {
 Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
 Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом. Поле sections — это настоящий вложенный JSON-объект с 10 ключами (каждый — объект {title, text}), а не строка с текстом JSON внутри.`;
 
-    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
+    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\n${instructions ? `Поручение от пользователя (обязательно учти при анализе и рекомендациях): ${instructions}\n\n` : ''}Найди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
 
     let analysis = null;
     try {
@@ -108,6 +112,7 @@ module.exports = async function handler(req, res) {
       positions: portfolio.positions || [],
       sections,
       news,
+      instructions,
     };
 
     const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/invest_analyses`, {
@@ -115,6 +120,18 @@ module.exports = async function handler(req, res) {
       headers: { ...sbHeaders, 'Prefer': 'return=representation' },
       body: JSON.stringify(record),
     });
+
+    if (!saveRes.ok) {
+      // Отдаём готовый анализ пользователю даже если запись не сохранилась в историю
+      // (например, в БД ещё не применена свежая миграция) — работа Claude не теряется.
+      const errText = await saveRes.text();
+      console.error('Не удалось сохранить анализ в Supabase:', errText);
+      return res.status(200).json({
+        ...record, id: null, created_at: new Date().toISOString(),
+        save_error: 'Анализ не сохранён в историю (ошибка базы данных): ' + errText,
+      });
+    }
+
     const saved = await saveRes.json();
     const row = Array.isArray(saved) ? saved[0] : saved;
 

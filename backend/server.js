@@ -447,17 +447,21 @@ function findToolUse(content, name) {
 app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res) => {
   const images = (req.files || []).filter(f => f.mimetype.startsWith('image/'));
   if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+  const instructions = (req.body?.instructions || '').trim() || null;
 
   try {
+    const extractionUserText = 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.'
+      + (instructions ? `\n\nДополнительное поручение от пользователя (используй как контекст, например уточнение брокера): ${instructions}` : '');
+
     const extraction = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 4096,
-      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные. Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS). Обязательно вызови extract_portfolio с результатом.`,
+      system: `Ты финансовый аналитик. Тебе показаны один или несколько скриншотов инвестиционного портфеля (брокерское приложение, терминал, таблица). Извлеки все позиции портфеля, объединяя данные со всех скриншотов — если одна и та же позиция встречается на нескольких скриншотах, не дублируй её, возьми наиболее полные данные. Если что-то не видно на скриншотах — используй null. Тикеры указывай в стандартном биржевом формате (например SBER, AAPL, TMOS). Если пользователь в поручении явно указал брокера или другие детали портфеля — используй их. Обязательно вызови extract_portfolio с результатом.`,
       messages: [{
         role: 'user',
         content: [
           ...images.map(f => ({ type: 'image', source: { type: 'base64', media_type: f.mimetype, data: f.buffer.toString('base64') } })),
-          { type: 'text', text: 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.' },
+          { type: 'text', text: extractionUserText },
         ],
       }],
       tools: [PORTFOLIO_TOOL],
@@ -471,7 +475,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
 Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
 Когда исследование закончено, ОБЯЗАТЕЛЬНО вызови submit_analysis ровно один раз с итоговым результатом — это единственный способ вернуть ответ, не пиши финальный вывод обычным текстом. Поле sections — это настоящий вложенный JSON-объект с 10 ключами (каждый — объект {title, text}), а не строка с текстом JSON внутри.`;
 
-    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\nНайди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
+    const analysisUser = `Данные портфеля:\n${JSON.stringify(portfolio)}\n\n${instructions ? `Поручение от пользователя (обязательно учти при анализе и рекомендациях): ${instructions}\n\n` : ''}Найди актуальные новости и составь полный анализ по всем 10 разделам, затем вызови submit_analysis.`;
 
     let analysis = null;
     try {
@@ -523,6 +527,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
       positions: portfolio.positions || [],
       sections,
       news,
+      instructions,
     };
 
     const { data: saved, error } = await supabase.from('invest_analyses').insert(record).select().single();

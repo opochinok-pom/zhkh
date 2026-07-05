@@ -110,8 +110,12 @@ CREATE TABLE IF NOT EXISTS invest_analyses (
   screenshot_count INT,
   positions JSONB,      -- [{ticker, name, quantity, value, weight_pct, asset_class, sector, country, ...}]
   sections JSONB,       -- {summary:{title,text}, composition:{...}, ... , recommendations:{...}}
-  news JSONB            -- [{ticker, title, url, date, sentiment, summary}]
+  news JSONB,           -- [{ticker, title, url, date, sentiment, summary}]
+  instructions TEXT     -- поручение/уточнение пользователя к этому анализу (например: "брокер — Сбер")
 );
+
+-- На случай, если таблица уже была создана предыдущей версией схемы без этой колонки
+ALTER TABLE invest_analyses ADD COLUMN IF NOT EXISTS instructions TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_invest_analyses_created_at ON invest_analyses(created_at DESC);
 
