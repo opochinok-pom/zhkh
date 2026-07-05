@@ -97,3 +97,23 @@ ALTER TABLE fitness_exercise_state ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow all for anon" ON fitness_body_logs FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all for anon" ON fitness_workout_logs FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all for anon" ON fitness_exercise_state FOR ALL USING (true) WITH CHECK (true);
+
+-- ── Инвестиции — анализ портфеля ────────────────────────────────────────────
+
+-- Один запуск анализа: распознанный портфель + отчёт по 10 разделам + новости
+CREATE TABLE IF NOT EXISTS invest_analyses (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  broker TEXT,
+  currency TEXT,
+  total_value NUMERIC,
+  screenshot_count INT,
+  positions JSONB,      -- [{ticker, name, quantity, value, weight_pct, asset_class, sector, country, ...}]
+  sections JSONB,       -- {summary:{title,text}, composition:{...}, ... , recommendations:{...}}
+  news JSONB            -- [{ticker, title, url, date, sentiment, summary}]
+);
+
+CREATE INDEX IF NOT EXISTS idx_invest_analyses_created_at ON invest_analyses(created_at DESC);
+
+ALTER TABLE invest_analyses ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all for anon" ON invest_analyses FOR ALL USING (true) WITH CHECK (true);
