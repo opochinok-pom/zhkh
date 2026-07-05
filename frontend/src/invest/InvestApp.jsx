@@ -5,7 +5,7 @@ import SectionsGrid from './components/SectionsGrid.jsx';
 import NewsList from './components/NewsList.jsx';
 import HistoryDrawer from './components/HistoryDrawer.jsx';
 import ToastContainer from '../components/Toast.jsx';
-import { analyzePortfolio, fetchHistoryItem } from './api.js';
+import { analyzePortfolio, pollAnalysis, fetchHistoryItem } from './api.js';
 import { compressImage } from './utils.js';
 
 const STAGES = [
@@ -51,8 +51,7 @@ function InvestApp() {
     });
   }, []);
 
-  const handleAnalyze = async () => {
-    if (shots.length === 0) return;
+  const runPolling = useCallback(async id => {
     setAnalyzing(true);
     setStage(0);
     let step = 0;
@@ -62,23 +61,47 @@ function InvestApp() {
     }, 4000);
 
     try {
-      const data = await analyzePortfolio(shots.map(s => s.file), instructions);
-      setResult(data);
-      if (data.save_error) addToast(data.save_error, 'error');
-      else addToast('Анализ портфеля готов', 'success');
+      const data = await pollAnalysis(id);
+      if (data.status === 'error') {
+        setResult(data);
+        addToast('Ошибка анализа: ' + (data.error_message || 'неизвестная ошибка'), 'error');
+      } else {
+        setResult(data);
+        if (data.save_error) addToast(data.save_error, 'error');
+        else addToast('Анализ портфеля готов', 'success');
+      }
     } catch (e) {
       addToast('Ошибка анализа: ' + e.message, 'error');
     } finally {
       clearInterval(stageTimer.current);
       setAnalyzing(false);
     }
+  }, [addToast]);
+
+  const handleAnalyze = async () => {
+    if (shots.length === 0) return;
+    setAnalyzing(true);
+    try {
+      const created = await analyzePortfolio(shots.map(s => s.file), instructions);
+      runPolling(created.id);
+    } catch (e) {
+      addToast('Ошибка анализа: ' + e.message, 'error');
+      setAnalyzing(false);
+    }
   };
 
   const handleSelectHistory = async id => {
+    setShowHistory(false);
     try {
       const data = await fetchHistoryItem(id);
-      setResult(data);
-      setShowHistory(false);
+      if (data.status === 'pending') {
+        runPolling(id);
+      } else {
+        setResult(data);
+        if (data.status === 'error') {
+          addToast('Этот анализ завершился ошибкой: ' + (data.error_message || 'неизвестная ошибка'), 'error');
+        }
+      }
     } catch (e) {
       addToast('Ошибка загрузки отчёта: ' + e.message, 'error');
     }
@@ -144,7 +167,16 @@ function InvestApp() {
           </button>
         </div>
 
-        {result && (
+        {result && result.status === 'error' && (
+          <div className="i-card">
+            <span className="i-card-title">⚠️ Анализ не выполнен</span>
+            <p style={{ marginTop: 8, fontSize: '.82rem', color: 'var(--i-text-dim, #94A3B8)' }}>
+              {result.error_message || 'Неизвестная ошибка'}
+            </p>
+          </div>
+        )}
+
+        {result && result.status !== 'error' && result.sections && (
           <>
             {result.instructions && (
               <div className="i-card i-instructions-note">

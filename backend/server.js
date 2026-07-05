@@ -444,19 +444,12 @@ function findToolUse(content, name) {
   return (content || []).find(b => b.type === 'tool_use' && b.name === name)?.input || null;
 }
 
-app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res) => {
-  const images = (req.files || []).filter(f => f.mimetype.startsWith('image/'));
-  if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
-  const instructions = (req.body?.instructions || '').trim() || null;
-
-  // Анализ занимает десятки секунд (распознавание + веб-поиск). На мобильных
-  // сетях/прокси соединение без единого байта данных долго может обрываться
-  // ("Load failed" в Safari) — поэтому шлём периодический heartbeat, держащий
-  // HTTP-соединение живым, пока идёт обработка.
-  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-  const heartbeat = setInterval(() => { try { res.write(' '); } catch (e) { /* соединение уже закрыто */ } }, 15000);
-  const finish = (payload) => { clearInterval(heartbeat); res.end(JSON.stringify(payload)); };
-
+// Анализ занимает 30-90+ секунд (распознавание + веб-поиск). Держать клиента
+// на одном долгом запросе всё это время ненадёжно на мобильных сетях —
+// поэтому сразу создаём запись со status 'pending', отвечаем клиенту быстро,
+// а сам анализ считаем в фоне (Express не завершает процесс после ответа,
+// в отличие от serverless) и обновляем запись по готовности.
+async function runInvestAnalysis(id, images, instructions) {
   try {
     const extractionUserText = 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.'
       + (instructions ? `\n\nДополнительное поручение от пользователя (используй как контекст, например уточнение брокера): ${instructions}` : '');
@@ -477,7 +470,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
     });
 
     const portfolio = findToolUse(extraction.content, 'extract_portfolio');
-    if (!portfolio) return finish({ error: 'Claude не распознал портфель' });
+    if (!portfolio) return markInvestError(id, 'Claude не распознал портфель');
 
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
 Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
@@ -515,7 +508,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
         tool_choice: { type: 'tool', name: 'submit_analysis' },
       });
       analysis = findToolUse(withoutSearch.content, 'submit_analysis');
-      if (!analysis) return finish({ error: 'Claude не смог сформировать анализ' });
+      if (!analysis) return markInvestError(id, 'Claude не смог сформировать анализ');
     }
 
     const coercedSections = coerceJson(analysis.sections);
@@ -527,29 +520,42 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
     const coercedNews = coerceJson(analysis.news);
     const news = Array.isArray(coercedNews) ? coercedNews : [];
 
-    const record = {
+    const { error } = await supabase.from('invest_analyses').update({
       broker: portfolio.broker || null,
       currency: portfolio.currency || null,
       total_value: portfolio.total_value ?? null,
-      screenshot_count: images.length,
       positions: portfolio.positions || [],
       sections,
       news,
-      instructions,
-    };
-
-    const { data: saved, error } = await supabase.from('invest_analyses').insert(record).select().single();
-    if (error) {
-      console.error('Не удалось сохранить анализ в Supabase:', error.message);
-      return finish({
-        ...record, id: null, created_at: new Date().toISOString(),
-        save_error: 'Анализ не сохранён в историю (ошибка базы данных): ' + error.message,
-      });
-    }
-    finish(saved);
+      status: 'done',
+    }).eq('id', id);
+    if (error) console.error('Не удалось сохранить анализ в Supabase:', error.message);
   } catch (err) {
-    finish({ error: err.message });
+    await markInvestError(id, err.message);
   }
+}
+
+async function markInvestError(id, message) {
+  console.error('Анализ портфеля завершился ошибкой:', message);
+  await supabase.from('invest_analyses').update({ status: 'error', error_message: message }).eq('id', id);
+}
+
+app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res) => {
+  const images = (req.files || []).filter(f => f.mimetype.startsWith('image/'));
+  if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+  const instructions = (req.body?.instructions || '').trim() || null;
+
+  const { data: created, error } = await supabase.from('invest_analyses').insert({
+    screenshot_count: images.length,
+    instructions,
+    status: 'pending',
+  }).select().single();
+
+  if (error) return res.status(502).json({ error: 'Не удалось создать запись анализа: ' + error.message });
+
+  runInvestAnalysis(created.id, images, instructions); // не ждём — считаем в фоне
+
+  res.status(202).json(created);
 });
 
 app.get('/api/invest/history', async (req, res) => {
