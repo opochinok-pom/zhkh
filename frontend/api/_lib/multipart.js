@@ -36,7 +36,9 @@ function parseMultipart(buf, contentType) {
         base64: Buffer.from(raw, 'binary').toString('base64'),
       });
     } else {
-      fields[name] = raw;
+      // raw — «двоичная» (latin1) строка; текстовые поля почти всегда UTF-8
+      // (кириллица и т.п.), поэтому перекодируем обратно через Buffer.
+      fields[name] = Buffer.from(raw, 'binary').toString('utf8');
     }
   }
 
