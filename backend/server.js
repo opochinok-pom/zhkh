@@ -449,6 +449,14 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
   if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
   const instructions = (req.body?.instructions || '').trim() || null;
 
+  // Анализ занимает десятки секунд (распознавание + веб-поиск). На мобильных
+  // сетях/прокси соединение без единого байта данных долго может обрываться
+  // ("Load failed" в Safari) — поэтому шлём периодический heartbeat, держащий
+  // HTTP-соединение живым, пока идёт обработка.
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  const heartbeat = setInterval(() => { try { res.write(' '); } catch (e) { /* соединение уже закрыто */ } }, 15000);
+  const finish = (payload) => { clearInterval(heartbeat); res.end(JSON.stringify(payload)); };
+
   try {
     const extractionUserText = 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.'
       + (instructions ? `\n\nДополнительное поручение от пользователя (используй как контекст, например уточнение брокера): ${instructions}` : '');
@@ -469,7 +477,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
     });
 
     const portfolio = findToolUse(extraction.content, 'extract_portfolio');
-    if (!portfolio) return res.status(502).json({ error: 'Claude не распознал портфель' });
+    if (!portfolio) return finish({ error: 'Claude не распознал портфель' });
 
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
 Затем составь полный анализ портфеля из 10 разделов на русском языке. Каждый раздел — содержательный текст (2-4 предложения или список пунктов через " • "), с конкретикой и ссылками на цифры из портфеля.
@@ -484,7 +492,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
         max_tokens: 8192,
         system: analysisSystem,
         messages: [{ role: 'user', content: analysisUser }],
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 }, ANALYSIS_TOOL],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }, ANALYSIS_TOOL],
       }, { headers: { 'anthropic-beta': 'web-search-2025-03-05' } });
       analysis = findToolUse(withSearch.content, 'submit_analysis');
       if (!analysis) {
@@ -507,7 +515,7 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
         tool_choice: { type: 'tool', name: 'submit_analysis' },
       });
       analysis = findToolUse(withoutSearch.content, 'submit_analysis');
-      if (!analysis) return res.status(502).json({ error: 'Claude не смог сформировать анализ' });
+      if (!analysis) return finish({ error: 'Claude не смог сформировать анализ' });
     }
 
     const coercedSections = coerceJson(analysis.sections);
@@ -531,10 +539,16 @@ app.post('/api/invest/analyze', upload.array('screenshots', 10), async (req, res
     };
 
     const { data: saved, error } = await supabase.from('invest_analyses').insert(record).select().single();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(saved);
+    if (error) {
+      console.error('Не удалось сохранить анализ в Supabase:', error.message);
+      return finish({
+        ...record, id: null, created_at: new Date().toISOString(),
+        save_error: 'Анализ не сохранён в историю (ошибка базы данных): ' + error.message,
+      });
+    }
+    finish(saved);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    finish({ error: err.message });
   }
 });
 
