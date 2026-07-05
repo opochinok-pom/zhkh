@@ -1,15 +1,26 @@
+// Запускает анализ и сразу возвращает {id, status:'pending'} — сама обработка
+// (30-90+ сек) идёт в фоне на сервере, чтобы не держать клиента на одном долгом
+// запросе (мобильные сети часто рвут соединение без данных дольше 30-60 сек).
 export async function analyzePortfolio(files, instructions) {
   const form = new FormData();
   files.forEach(f => form.append('screenshots', f, f.name));
   if (instructions && instructions.trim()) form.append('instructions', instructions.trim());
   const res = await fetch('/api/invest/analyze', { method: 'POST', body: form });
-  const text = await res.text();
-  // Пока идёт анализ, сервер шлёт heartbeat-пробелы, чтобы соединение не обрывалось
-  // на мобильных сетях/прокси — JSON.parse спокойно пропускает такие пробелы.
-  let data;
-  try { data = JSON.parse(text); } catch (e) { throw new Error(text || 'Пустой ответ сервера'); }
-  if (!res.ok || data.error) throw new Error(data.error || text);
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || 'Не удалось запустить анализ');
   return data;
+}
+
+// Опрашивает статус анализа, пока он не станет 'done' или 'error'.
+export async function pollAnalysis(id, { intervalMs = 3000, timeoutMs = 5 * 60 * 1000, onTick } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const data = await fetchHistoryItem(id);
+    if (onTick) onTick(data);
+    if (data.status !== 'pending') return data;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  throw new Error('Анализ выполняется слишком долго — попробуйте открыть его позже в истории');
 }
 
 export async function fetchHistory(limit = 20) {

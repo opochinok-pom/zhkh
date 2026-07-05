@@ -111,11 +111,15 @@ CREATE TABLE IF NOT EXISTS invest_analyses (
   positions JSONB,      -- [{ticker, name, quantity, value, weight_pct, asset_class, sector, country, ...}]
   sections JSONB,       -- {summary:{title,text}, composition:{...}, ... , recommendations:{...}}
   news JSONB,           -- [{ticker, title, url, date, sentiment, summary}]
-  instructions TEXT     -- поручение/уточнение пользователя к этому анализу (например: "брокер — Сбер")
+  instructions TEXT,    -- поручение/уточнение пользователя к этому анализу (например: "брокер — Сбер")
+  status TEXT DEFAULT 'done',  -- 'pending' | 'done' | 'error' — анализ считается в фоне после ответа клиенту
+  error_message TEXT
 );
 
--- На случай, если таблица уже была создана предыдущей версией схемы без этой колонки
+-- На случай, если таблица уже была создана предыдущей версией схемы без этих колонок
 ALTER TABLE invest_analyses ADD COLUMN IF NOT EXISTS instructions TEXT;
+ALTER TABLE invest_analyses ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'done';
+ALTER TABLE invest_analyses ADD COLUMN IF NOT EXISTS error_message TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_invest_analyses_created_at ON invest_analyses(created_at DESC);
 

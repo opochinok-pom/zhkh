@@ -2,6 +2,17 @@
 // через встроенный веб-поиск Claude и формирует полный анализ из 10 разделов.
 // Итоговый JSON приходит через tool-use (аргументы валидируются Anthropic API
 // по input_schema), а не парсится из свободного текста — так надёжнее.
+//
+// Сам анализ занимает 30-90+ секунд (распознавание + веб-поиск). Держать
+// клиента на одном долгом HTTP-запросе всё это время ненадёжно — мобильные
+// сети и прокси часто рвут соединение, если по нему долго не идёт ни байта
+// ("Load failed" в Safari), а классические Node.js serverless-функции на
+// Vercel буферизуют весь ответ и не отдают его частями, так что heartbeat
+// через res.write() не спасает. Поэтому: сразу создаём запись со status
+// 'pending' и отвечаем клиенту за секунду, а сам анализ считаем в фоне
+// через waitUntil — клиент опрашивает /api/invest/history?id=... короткими
+// запросами, пока статус не станет 'done' или 'error'.
+const { waitUntil } = require('@vercel/functions');
 const { readBody, parseMultipart } = require('../_lib/multipart');
 const { callClaude, extractJSON, findToolUse, coerceJSON } = require('../_lib/claude');
 const { SECTION_KEYS, SECTION_TITLES, PORTFOLIO_TOOL, ANALYSIS_TOOL } = require('../_lib/investSchemas');
@@ -15,35 +26,8 @@ const sbHeaders = {
   'Content-Type': 'application/json',
 };
 
-module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-  let images, fields;
+async function runAnalysis(id, images, instructions) {
   try {
-    const buf = await readBody(req);
-    const parsed = parseMultipart(buf, req.headers['content-type']);
-    fields = parsed.fields;
-    images = parsed.files.filter(f => f.mediaType.startsWith('image/'));
-  } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
-  if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
-
-  // Анализ занимает десятки секунд (распознавание + веб-поиск). На мобильных
-  // сетях/прокси соединение без единого байта данных долго может обрываться
-  // ("Load failed" в Safari) — поэтому шлём периодический heartbeat, держащий
-  // HTTP-соединение живым, пока идёт обработка.
-  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-  const heartbeat = setInterval(() => { try { res.write(' '); } catch (e) { /* соединение уже закрыто */ } }, 15000);
-  const finish = (payload) => { clearInterval(heartbeat); res.end(JSON.stringify(payload)); };
-
-  try {
-    const instructions = (fields.instructions || '').trim() || null;
-
     // ── 1. Распознаём позиции портфеля со всех скриншотов ──────────────────
     const extractionUserText = 'Распознай портфель на этих скриншотах и передай результат в extract_portfolio.'
       + (instructions ? `\n\nДополнительное поручение от пользователя (используй как контекст, например уточнение брокера): ${instructions}` : '');
@@ -67,7 +51,7 @@ module.exports = async function handler(req, res) {
     });
 
     const portfolio = findToolUse(extraction.toolUses, 'extract_portfolio');
-    if (!portfolio) return finish({ error: 'Claude не распознал портфель' });
+    if (!portfolio) return markError(id, 'Claude не распознал портфель');
 
     // ── 2. Ищем новости и строим полный анализ по 10 разделам ──────────────
     const analysisSystem = `Ты профессиональный инвестиционный аналитик. У тебя есть данные портфеля клиента и доступ к инструменту веб-поиска. Используй веб-поиск, чтобы найти актуальные новости (последние 1-2 недели) по основным позициям портфеля, ключевым секторам и общему рынку, которые могут повлиять на портфель.
@@ -103,7 +87,7 @@ module.exports = async function handler(req, res) {
         tool_choice: { type: 'tool', name: 'submit_analysis' },
       });
       analysis = findToolUse(withoutSearch.toolUses, 'submit_analysis');
-      if (!analysis) return finish({ error: 'Claude не смог сформировать анализ' });
+      if (!analysis) return markError(id, 'Claude не смог сформировать анализ');
     }
 
     // Даже при tool-use модель иногда кладёт sections/news как строку с сырым JSON
@@ -119,39 +103,67 @@ module.exports = async function handler(req, res) {
     const news = Array.isArray(coercedNews) ? coercedNews : [];
 
     // ── 3. Сохраняем результат ──────────────────────────────────────────────
-    const record = {
+    await patchAnalysis(id, {
       broker: portfolio.broker || null,
       currency: portfolio.currency || null,
       total_value: portfolio.total_value ?? null,
-      screenshot_count: images.length,
       positions: portfolio.positions || [],
       sections,
       news,
-      instructions,
-    };
+      status: 'done',
+    });
+  } catch (e) {
+    await markError(id, e.message);
+  }
+}
 
-    const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/invest_analyses`, {
+async function patchAnalysis(id, fields) {
+  await fetch(`${SUPABASE_URL}/rest/v1/invest_analyses?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: sbHeaders,
+    body: JSON.stringify(fields),
+  });
+}
+
+async function markError(id, message) {
+  console.error('Анализ портфеля завершился ошибкой:', message);
+  await patchAnalysis(id, { status: 'error', error_message: message });
+}
+
+module.exports = async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  try {
+    const buf = await readBody(req);
+    const { files, fields } = parseMultipart(buf, req.headers['content-type']);
+    const images = files.filter(f => f.mediaType.startsWith('image/'));
+    if (!images.length) return res.status(400).json({ error: 'Скриншоты не найдены' });
+    const instructions = (fields.instructions || '').trim() || null;
+
+    const createRes = await fetch(`${SUPABASE_URL}/rest/v1/invest_analyses`, {
       method: 'POST',
       headers: { ...sbHeaders, 'Prefer': 'return=representation' },
-      body: JSON.stringify(record),
+      body: JSON.stringify({
+        screenshot_count: images.length,
+        instructions,
+        status: 'pending',
+      }),
     });
-
-    if (!saveRes.ok) {
-      // Отдаём готовый анализ пользователю даже если запись не сохранилась в историю
-      // (например, в БД ещё не применена свежая миграция) — работа Claude не теряется.
-      const errText = await saveRes.text();
-      console.error('Не удалось сохранить анализ в Supabase:', errText);
-      return finish({
-        ...record, id: null, created_at: new Date().toISOString(),
-        save_error: 'Анализ не сохранён в историю (ошибка базы данных): ' + errText,
-      });
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      return res.status(502).json({ error: 'Не удалось создать запись анализа: ' + errText });
     }
+    const created = await createRes.json();
+    const row = Array.isArray(created) ? created[0] : created;
 
-    const saved = await saveRes.json();
-    const row = Array.isArray(saved) ? saved[0] : saved;
+    waitUntil(runAnalysis(row.id, images, instructions));
 
-    return finish(row || { ...record, id: null, created_at: new Date().toISOString() });
+    return res.status(202).json(row);
   } catch (e) {
-    return finish({ error: e.message });
+    return res.status(500).json({ error: e.message });
   }
 };
